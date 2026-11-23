@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fast Media Transfer</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 600px; margin: 32px auto; padding: 16px; background: #f9fafb; color: #111827; }
+    .card { background: #fff; border: 1px solid #e5e7eb; border-radius: 14px; padding: 20px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+    button { width: 100%; padding: 14px; font-size: 16px; font-weight: 600; border-radius: 10px; border: 0; background: #111827; color: #fff; cursor: pointer; margin-top: 8px; }
+    button.secondary { background: #e5e7eb; color: #111827; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    #status { margin-top: 14px; font-size: 14px; line-height: 1.6; white-space: pre-line; }
+    .file-item { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #f3f4f6; font-size: 14px; gap: 10px; }
+    .file-item a { color: #2563eb; text-decoration: none; font-weight: 600; white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>Media Permissions</h2>
+    <p>Allow media access to select your photos and videos and transfer them rapidly to your cloud storage.</p>
+    <button id="grant-btn" type="button">Allow & Select Photos / Videos</button>
+    <input id="media-input" type="file" accept="image/*,video/*" multiple hidden />
+    <div id="status"></div>
+  </div>
+
+  <div class="card">
+    <h3>Uploaded Files (Access on PC / Laptop / Phone)</h3>
+    <button id="refresh-btn" class="secondary" type="button">Refresh File List</button>
+    <div id="file-list" style="margin-top: 12px;"></div>
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token") || "";
+    const grantBtn = document.getElementById("grant-btn");
+    const refreshBtn = document.getElementById("refresh-btn");
+    const mediaInput = document.getElementById("media-input");
+    const statusEl = document.getElementById("status");
+    const fileListEl = document.getElementById("file-list");
+    const CONCURRENCY = 4;
+
+    grantBtn.addEventListener("click", () => mediaInput.click());
+
+    async function uploadOne(file) {
+      const url = `/api/upload?token=${encodeURIComponent(token)}&name=${encodeURIComponent(file.name)}`;
+      const res = await fetch(url, {
+        method: "PUT",
+        headers: { "Content-Type": file.type || "application/octet-stream" },
+        body: file
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
+
+    mediaInput.addEventListener("change", async () => {
+      const files = Array.from(mediaInput.files || []);
+      if (!files.length) return;
+
+      grantBtn.disabled = true;
+      let completed = 0;
+      let failed = 0;
+      let index = 0;
+
+      const updateStatus = () => {
+        statusEl.textContent = `Selected: ${files.length} | Uploaded: ${completed} | Failed: ${failed}`;
+      };
+      updateStatus();
+
+      async function worker() {
+        while (index < files.length) {
+          const current = files[index++];
+          try {
+            await uploadOne(current);
+            completed++;
+          } catch {
+            failed++;
+          }
+          updateStatus();
+        }
+      }
+
+      await Promise.all(Array.from({ length: Math.min(CONCURRENCY, files.length) }, worker));
+      grantBtn.disabled = false;
+      mediaInput.value = "";
+      statusEl.textContent += "\nTransfer complete!";
+      loadFiles();
+    });
+
+    async function loadFiles() {
+      fileListEl.textContent = "Loading...";
+      const res = await fetch(`/api/list?token=${encodeURIComponent(token)}`);
+      if (!res.ok) {
+        fileListEl.textContent = "Unauthorized or error. Make sure ?token=YOUR_SECRET is in the URL.";
+        return;
+      }
+      const files = await res.json();
+      if (!files.length) {
+        fileListEl.textContent = "No files uploaded yet.";
+        return;
+      }
+      fileListEl.innerHTML = files.map(f => `
+        <div class="file-item">
+          <span style="overflow:hidden;text-overflow:ellipsis;">${f.key} (${(f.size / 1024 / 1024).toFixed(2)} MB)</span>
+          <a href="/api/file?token=${encodeURIComponent(token)}&key=${encodeURIComponent(f.key)}" target="_blank">Open / Download</a>
+        </div>
+      `).join("");
+    }
+
+    refreshBtn.addEventListener("click", loadFiles);
+    loadFiles();
+  </script>
+</body>
+</html>
